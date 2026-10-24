@@ -1,0 +1,75 @@
+From 3eca89d8445a0eb8dc3d4af379a6e60d0fb4bfdd Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Fri, 23 Oct 2026 21:24:31 +0200
+Subject: [PATCH 4/5] drivers: Use the first existing binder node, not the last
+
+setupBinderNodes kept assigning without a break, so the last existing
+candidate won. In MAINLINE mode the candidate lists end with the plain
+binder, vndbinder and hwbinder, so on a libhybris host, where those are
+the host's own binder devices, Waydroid was configured onto the host's
+binder even when dedicated nodes (anbox-binder, puddlejumper) existed.
+The lists are ordered by preference, so stop at the first match.
+
+Seen on a Sailfish OS port of the Sony Xperia 10 VI (Android 16 vendor,
+detected as MAINLINE by 1.4.3): waydroid init wrote binder = binder.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/helpers/drivers.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/tools/helpers/drivers.py b/tools/helpers/drivers.py
+index 3045ee5..b8741cc 100644
+--- a/tools/helpers/drivers.py
++++ b/tools/helpers/drivers.py
+@@ -128,6 +128,7 @@ def setupBinderNodes(args):
+             if os.path.exists("/dev/" + node):
+                 has_binder = True
+                 args.BINDER_DRIVER = node
++                break
+         if not has_binder:
+             raise OSError('Binder node "binder" for waydroid not found')
+ 
+@@ -135,6 +136,7 @@ def setupBinderNodes(args):
+             if os.path.exists("/dev/" + node):
+                 has_vndbinder = True
+                 args.VNDBINDER_DRIVER = node
++                break
+         if not has_vndbinder:
+             raise OSError('Binder node "vndbinder" for waydroid not found')
+ 
+@@ -142,6 +144,7 @@ def setupBinderNodes(args):
+             if os.path.exists("/dev/" + node):
+                 has_hwbinder = True
+                 args.HWBINDER_DRIVER = node
++                break
+         if not has_hwbinder:
+             raise OSError('Binder node "hwbinder" for waydroid not found')
+     else:
+@@ -149,6 +152,7 @@ def setupBinderNodes(args):
+             if os.path.exists("/dev/" + node):
+                 has_binder = True
+                 args.BINDER_DRIVER = node
++                break
+         if not has_binder:
+             raise OSError('Binder node "binder" for waydroid not found')
+ 
+@@ -156,6 +160,7 @@ def setupBinderNodes(args):
+             if os.path.exists("/dev/" + node):
+                 has_vndbinder = True
+                 args.VNDBINDER_DRIVER = node
++                break
+         if not has_vndbinder:
+             raise OSError('Binder node "vndbinder" for waydroid not found')
+ 
+@@ -163,6 +168,7 @@ def setupBinderNodes(args):
+             if os.path.exists("/dev/" + node):
+                 has_hwbinder = True
+                 args.HWBINDER_DRIVER = node
++                break
+         if not has_hwbinder:
+             raise OSError('Binder node "hwbinder" for waydroid not found')
+ 
+-- 
+2.53.0
+

@@ -1,0 +1,47 @@
+From 6561b53f3f2600c0f82ef06889fbce5454a3e0de Mon Sep 17 00:00:00 2001
+From: Jami Kettunen <jami.kettunen@protonmail.com>
+Date: Tue, 21 Jul 2026 16:47:39 +0300
+Subject: [PATCH 1/5] initializer: Add alternate version detection logic for
+ Halium 15+
+
+VNDK is deprecated[1] from 15 onwards with its files now largely just
+present as normal vendor partition contents. On Volla Phone Quintus with
+UT port rebased to latest Android firmware on kernel v6.6[2]
+ro.vndk.version is no longer defined while the best alternative for the
+same job seems to be ro.vendor.build.version.sdk=35
+
+[1] https://source.android.com/docs/core/architecture/vndk#vndk-deprecation
+[2] https://gitlab.com/ubports/porting/reference-device-ports/halium13/volla-phone-quintus/volla-algiz/-/tree/halium-16.0
+
+(cherry picked from commit e7d73e7ff9d23003356d716e5a40fa5ca7ad17e0)
+---
+ tools/actions/initializer.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/tools/actions/initializer.py b/tools/actions/initializer.py
+index 0456e59..c3ab342 100644
+--- a/tools/actions/initializer.py
++++ b/tools/actions/initializer.py
+@@ -21,6 +21,7 @@ def is_initialized(args):
+ 
+ def get_vendor_type(args):
+     vndk_str = helpers.props.host_get(args, "ro.vndk.version")
++    vendorapi_str = helpers.props.host_get(args, "ro.vendor.build.version.sdk")
+     ret = "MAINLINE"
+     if vndk_str != "":
+         vndk = int(vndk_str)
+@@ -31,6 +32,11 @@ def get_vendor_type(args):
+             ret = "HALIUM_" + str(halium_ver)
+             if vndk == 32:
+                 ret += "L"
++    elif vendorapi_str != "":
++        vendorapi = int(vendorapi_str)
++        if vendorapi > 32:
++            halium_ver = vendorapi - 20
++            ret = "HALIUM_" + str(halium_ver)
+ 
+     return ret
+ 
+-- 
+2.53.0
+

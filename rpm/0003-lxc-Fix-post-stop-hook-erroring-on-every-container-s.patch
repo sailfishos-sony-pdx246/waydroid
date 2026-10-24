@@ -1,0 +1,86 @@
+From 94e035cac6fe49b62772d50222ae960ae6470fab Mon Sep 17 00:00:00 2001
+From: Nikolay Metchev <nikolaymetchev@gmail.com>
+Date: Thu, 4 Jun 2026 13:12:08 +0100
+Subject: [PATCH 2/5] lxc: Fix post-stop hook erroring on every container stop
+
+The post-stop hook was set to `/dev/null` as a no-op. Its actual purpose
+(see #436) is to make LXC suppress auto-respawning the container when the
+guest reboots/crashes, since waydroid manages the session lifecycle itself
+-- LXC suppresses the respawn when the post-stop hook exits non-zero, and
+/dev/null "achieves" this only because it is not executable.
+
+The side effect is that the hook fails on *every* container stop, including
+a normal shutdown, logging an error that users routinely misdiagnose:
+
+    lxc-start: waydroid: utils.c: run_buffer: 569 Script exited with status 126
+    lxc-start: waydroid: start.c: lxc_end: 1178 Failed to run lxc.hook.post-stop for container "waydroid"
+
+(Reproduced on LXC 7.0.0; status 126 is execve() of the non-executable
+/dev/null.)
+
+Replace it with a real post-stop script that keys off LXC_TARGET: exit 0 on
+"stop" so a routine `waydroid session stop` is clean, and non-zero otherwise
+(reboot, or an unset value on older LXC) to preserve the respawn-suppression.
+The script path is substituted into the generated config in set_lxc_config(),
+mirroring the existing LXCARCH handling.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+(cherry picked from commit 5f19fe9c4c83924f2ac2b25aa663760e97284e66)
+---
+ data/configs/config_base           |  2 +-
+ data/scripts/waydroid-post-stop.sh | 17 +++++++++++++++++
+ tools/helpers/lxc.py               |  3 +++
+ 3 files changed, 21 insertions(+), 1 deletion(-)
+ create mode 100755 data/scripts/waydroid-post-stop.sh
+
+diff --git a/data/configs/config_base b/data/configs/config_base
+index 99fd198..7ff1f88 100644
+--- a/data/configs/config_base
++++ b/data/configs/config_base
+@@ -14,5 +14,5 @@ lxc.console.path = none
+ lxc.include = /var/lib/waydroid/lxc/waydroid/config_nodes
+ lxc.include = /var/lib/waydroid/lxc/waydroid/config_session
+ 
+-lxc.hook.post-stop = /dev/null
++lxc.hook.post-stop = LXCPOSTSTOP
+ 
+diff --git a/data/scripts/waydroid-post-stop.sh b/data/scripts/waydroid-post-stop.sh
+new file mode 100755
+index 0000000..1270d91
+--- /dev/null
++++ b/data/scripts/waydroid-post-stop.sh
+@@ -0,0 +1,17 @@
++#!/bin/sh
++# LXC post-stop hook.
++#
++# waydroid manages the container lifecycle itself, so LXC must not
++# automatically respawn the container when the guest reboots or crashes.
++# LXC suppresses that respawn when the post-stop hook exits non-zero.
++#
++# We only need to suppress it on a reboot; on a normal shutdown we exit 0
++# so that a routine `waydroid session stop` doesn't log a spurious
++# "Failed to run lxc.hook.post-stop" error (the previous no-op hook was
++# `/dev/null`, which is not executable and therefore failed on every stop).
++#
++# LXC_TARGET is "stop" for a shutdown and "reboot" for a reboot. Default to
++# suppressing the respawn for any other/unset value to preserve the old
++# always-non-zero behaviour.
++[ "$LXC_TARGET" = "stop" ] && exit 0
++exit 1
+diff --git a/tools/helpers/lxc.py b/tools/helpers/lxc.py
+index 1b6ff49..90481dd 100644
+--- a/tools/helpers/lxc.py
++++ b/tools/helpers/lxc.py
+@@ -164,6 +164,9 @@ def set_lxc_config(args):
+     tools.helpers.run.user(args, command)
+     command = ["sed", "-i", "s/LXCARCH/{}/".format(platform.machine()), lxc_path + "/config"]
+     tools.helpers.run.user(args, command)
++    post_stop_script = tools.config.tools_src + "/data/scripts/waydroid-post-stop.sh"
++    command = ["sed", "-i", "s#LXCPOSTSTOP#{}#".format(post_stop_script), lxc_path + "/config"]
++    tools.helpers.run.user(args, command)
+     command = ["cp", "-fpr", seccomp_profile, lxc_path + "/waydroid.seccomp"]
+     tools.helpers.run.user(args, command)
+     if get_apparmor_status(args):
+-- 
+2.53.0
+

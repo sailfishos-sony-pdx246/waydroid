@@ -1,29 +1,39 @@
 Name:           waydroid
-Version:        1.5.4
+Version:        1.6.3
 Release:        1
 Summary:        Container-based approach to boot a full Android system
 License:        GPLv3
 URL:            https://waydro.id/
 BuildArch:      noarch
 Source0:        %{name}-%{version}.tar.gz
-Patch0:         0001-disable-user-manager.patch
-Patch1:         0002-Remove-apparmor-reference-in-config_3.patch
+Patch0:         0001-Remove-apparmor-reference-in-config_3.patch
+# Upstream after 1.6.3: e7d73e7 (Halium 15+ detection), 5f19fe9 (post-stop hook)
+Patch1:         0002-initializer-Add-alternate-version-detection-logic-fo.patch
+Patch2:         0003-lxc-Fix-post-stop-hook-erroring-on-every-container-s.patch
+# Sailfish OS: no per-app launchers (replaces 0001-disable-user-manager.patch)
+Patch3:         0004-user_manager-Do-not-create-per-app-launchers-on-Sail.patch
+# Safety on libhybris hosts: never pick the host's own binder nodes
+Patch4:         0005-drivers-Use-the-first-existing-binder-node-not-the-l.patch
+# Android 15+ vendors: bind a host-prepared vendor view if mounted
+Patch5:         0006-lxc-Bind-a-host-prepared-vendor-view-if-one-is-mount.patch
 
 BuildRequires:  systemd
 BuildRequires:  desktop-file-utils
 Requires:       lxc
 Requires:       dnsmasq
-Requires:       python3-gbinder
+Requires:       python3-gbinder >= 1.3.0
 Requires:       python3-gobject
 Requires:       python3-dbus
 Requires:       waydroid-sensors
+# Patch5; droid-config-pdx246-waydroid requires it
+Provides:       waydroid(vendor-view)
 
 %description
 Waydroid uses Linux namespaces (user, pid, uts, net, mount, ipc) to run a full Android system in a container and provide Android applications on any GNU/Linux-based platform.
 
 The Android system inside the container has direct access to any needed hardware.
 
-The Android runtime environment ships with a minimal customized Android system image based on LineageOS. The image is currently based on Android 10.
+The Android runtime environment ships with a minimal customized Android system image based on LineageOS. The official images are currently based on Android 13 (LineageOS 20).
 
 Custom:
   Repo: https://github.com/waydroid/waydroid
@@ -111,6 +121,14 @@ systemctl daemon-reload
 systemctl-user daemon-reload
 systemctl enable waydroid-container
 
+%posttrans
+# Restart a running container service, so it does not keep running the old
+# code (this stops the Android container). Then, as upstream's Debian
+# postinst, rewrite the container configuration (lxc config, base props)
+# with this version; a no-op before waydroid init.
+systemctl try-restart waydroid-container.service || :
+waydroid upgrade -o || :
+
 %files
 %defattr(-,root,root,-)
 %attr(-, defaultuser, users)/home/waydroid
@@ -121,6 +139,8 @@ systemctl enable waydroid-container
 %{_unitdir}/waydroid-container.service
 %{_datadir}/dbus-1/
 %{_datadir}/applications/
+# show-full-ui on Lipstick's direct display: only with -settings
+%exclude %{_datadir}/applications/waydroid.desktop
 %{_datadir}/desktop-directories/
 %{_datadir}/icons/
 %{_datadir}/metainfo/

@@ -1,0 +1,41 @@
+From f7a4dc6a342d57445412aab48f09ca4dac2f78b2 Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Fri, 23 Oct 2026 21:24:45 +0200
+Subject: [PATCH 5/5] lxc: Bind a host-prepared vendor view if one is mounted
+
+In Halium mode the container sees the host's /vendor as /vendor_extra.
+Android 15+ vendors (VNDK deprecated) ship their own copies of former
+VNDK libraries (libbinder, libhidlbase, libbase, ...), and the container's
+linker finds them before the image's own: Waydroid's HALs then fail to
+link ("libapexsupport.so not found", IBinder::isHostHwBinder missing).
+
+Let the host prepare a view of /vendor at <work>/vendor_extra, for example
+an overlay with whiteouts for those names, and bind it instead when it is
+mounted. Without such a mount nothing changes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/helpers/lxc.py | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/tools/helpers/lxc.py b/tools/helpers/lxc.py
+index 90481dd..aeaee6e 100644
+--- a/tools/helpers/lxc.py
++++ b/tools/helpers/lxc.py
+@@ -79,7 +79,12 @@ def generate_nodes_lxc_config(args):
+     if args.vendor_type != "MAINLINE":
+         if not make_entry("/dev/hwbinder", "dev/host_hwbinder"):
+             raise OSError('Binder node "hwbinder" of host not found')
+-        make_entry("/vendor", "vendor_extra", options="rbind,optional 0 0")
++        # A host can prepare its own view of /vendor at <work>/vendor_extra (for
++        # example an overlay that hides the vendor's copies of libraries the
++        # image ships itself). If it is mounted, the container gets it instead.
++        vendor_view = tools.config.defaults["work"] + "/vendor_extra"
++        vendor_src = vendor_view if os.path.ismount(vendor_view) else "/vendor"
++        make_entry(vendor_src, "vendor_extra", options="rbind,optional 0 0")
+ 
+     # Necessary device nodes for adb
+     make_entry("none", "dev/pts", "devpts", "defaults,mode=644,ptmxmode=666,create=dir 0 0", False)
+-- 
+2.53.0
+
