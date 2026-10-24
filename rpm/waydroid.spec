@@ -1,6 +1,6 @@
 Name:           waydroid
 Version:        1.6.3
-Release:        1
+Release:        2
 Summary:        Container-based approach to boot a full Android system
 License:        GPLv3
 URL:            https://waydro.id/
@@ -16,6 +16,8 @@ Patch3:         0004-user_manager-Do-not-create-per-app-launchers-on-Sail.patch
 Patch4:         0005-drivers-Use-the-first-existing-binder-node-not-the-l.patch
 # Android 15+ vendors: bind a host-prepared vendor view if mounted
 Patch5:         0006-lxc-Bind-a-host-prepared-vendor-view-if-one-is-mount.patch
+# Sailfish OS: no host NFC features in the container (nfcd owns the controller)
+Patch6:         0007-lxc-Do-not-pass-the-host-s-NFC-features-on-Sailfish-.patch
 
 BuildRequires:  systemd
 BuildRequires:  desktop-file-utils

@@ -1,0 +1,58 @@
+From 3ba0ced6fcd7cc64393d6f9ba1b9d5e9e7ec9486 Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Sat, 24 Oct 2026 19:05:04 +0200
+Subject: [PATCH] lxc: Do not pass the host's NFC features on Sailfish OS
+
+setup_host_perms() copies the host's NFC feature files into the
+container, so that Android's NFC service can use the host's NFC HAL
+through host_hwbinder. On Sailfish OS the NFC controller belongs to
+nfcd. On the Xperia 10 VI, Android's NFC service opened the HAL, reset
+and re-initialized the controller, then hung in enableDiscovery until
+its routing watchdog aborted it ("JNI FatalError called: applyRouting").
+As a persistent app it restarted at once: one abort every ~11 s, for as
+long as the container ran. Each abort also starts the host's crash
+reporter (the kernel's core_pattern is global), which holds a wakelock
+for up to 120 s, so the wakelock was never released.
+
+Copy the IR feature as before, but no NFC features. Remove the copies
+of an earlier run first: the function only ever added files, so a file
+it no longer copies would stay.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/helpers/lxc.py | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/tools/helpers/lxc.py b/tools/helpers/lxc.py
+index aeaee6e..a144c18 100644
+--- a/tools/helpers/lxc.py
++++ b/tools/helpers/lxc.py
+@@ -360,6 +360,10 @@ def make_base_props(args):
+ def setup_host_perms(args):
+     if not os.path.exists(tools.config.defaults["host_perms"]):
+         os.mkdir(tools.config.defaults["host_perms"])
++    # Remove the copies of an earlier run, so that a file that is no longer
++    # copied (see below) does not stay.
++    for filename in glob.glob(tools.config.defaults["host_perms"] + "/*"):
++        os.remove(filename)
+ 
+     treble = tools.helpers.props.host_get(args, "ro.treble.enabled")
+     if treble != "true":
+@@ -382,6 +386,14 @@ def setup_host_perms(args):
+             copy_list.append(
+                 "/odm/etc/permissions/sku_{}/android.hardware.consumerir.xml".format(sku))
+ 
++    # Sailfish OS: no NFC features. The host's NFC controller belongs to
++    # nfcd. With these features Android's NFC service opens the same NFC HAL
++    # through host_hwbinder, re-initializes the controller, hangs in
++    # enableDiscovery until its watchdog aborts it, and restarts: every ~11 s
++    # for as long as the container runs.
++    copy_list = [f for f in copy_list
++                 if not os.path.basename(f).startswith("android.hardware.nfc")]
++
+     for filename in copy_list:
+         shutil.copy(filename, tools.config.defaults["host_perms"])
+ 
+-- 
+2.53.0
+
