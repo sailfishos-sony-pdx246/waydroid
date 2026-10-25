@@ -1,0 +1,133 @@
+From b172b43cae5336c14d174fc1525e5659fe944bad Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Sun, 25 Oct 2026 13:28:40 +0100
+Subject: [PATCH] time_zone_manager: Follow Sailfish OS's 24-hour clock setting
+
+Android in Waydroid shows a 12-hour clock (its locale is en-US), while
+Sailfish OS shows 24 hours. On Sailfish OS the setting is the dconf key
+/sailfish/i18n/lc_timeformat24h ("24" or "12"). The session copies it
+into Android's Settings.System time_12_24 through IPlatform (its
+settings table 1 is "system") once Android's user is unlocked, and
+whenever dconf reports a change of the key (ca.desrt.dconf.Writer.Notify
+on the session bus). Without the key, or without dconf, nothing
+changes. Android's status bar shows the new format from its next minute
+on: only Android's own settings page also sends ACTION_TIME_CHANGED.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/services/time_zone_manager.py | 72 +++++++++++++++++++++++++----
+ 1 file changed, 63 insertions(+), 9 deletions(-)
+
+diff --git a/tools/services/time_zone_manager.py b/tools/services/time_zone_manager.py
+index 3b52062..4263b44 100644
+--- a/tools/services/time_zone_manager.py
++++ b/tools/services/time_zone_manager.py
+@@ -4,24 +4,59 @@
+ # (SyncTimeZone: Android's AlarmManager through lxc-attach, which needs root)
+ # once Android's user is unlocked, and whenever /etc/localtime or a symlink
+ # it goes through changes.
++# On Sailfish OS, Android's 12/24-hour clock also follows the host's setting
++# (dconf), at the same time and whenever that setting changes.
+ import logging
+ import os
++import subprocess
+ import threading
+ import dbus
+ import tools.helpers.ipc
++from tools.interfaces import IPlatform
+ from gi.repository import Gio, GLib
+ 
++# Sailfish OS: "24" or "12"
++CLOCK_FORMAT_KEY = "/sailfish/i18n/lc_timeformat24h"
++# IPlatform's settings tables: 0 secure, 1 system, 2 global
++SETTINGS_SYSTEM = 1
++
++session_args = None
+ monitors = []
+ pending_sync = 0
++dconf_match = None
++
++def sync_time_zone():
++    try:
++        tools.helpers.ipc.DBusContainerService().SyncTimeZone()
++    except dbus.DBusException as e:
++        logging.warning("Failed to set Android's time zone: %s", e)
++
++def host_clock_format():
++    try:
++        value = subprocess.run(["dconf", "read", CLOCK_FORMAT_KEY], capture_output=True,
++                               text=True, timeout=10).stdout.strip().strip("'")
++    except (OSError, subprocess.SubprocessError):
++        return None
++    return value if value in ["12", "24"] else None
++
++def sync_clock_format():
++    # IPlatform waits for Android: only once its user is unlocked
++    from tools.services import user_manager
++    if not user_manager.user_unlocked.is_set():
++        return
++    value = host_clock_format()
++    if value is None:
++        return
++    platformService = IPlatform.get_service(session_args)
++    if platformService:
++        platformService.settingsPutString(SETTINGS_SYSTEM, "time_12_24", value)
+ 
+ def sync():
+-    def ask():
+-        try:
+-            tools.helpers.ipc.DBusContainerService().SyncTimeZone()
+-        except dbus.DBusException as e:
+-            logging.warning("Failed to set Android's time zone: %s", e)
+-    # lxc-attach takes a moment: not in the caller's thread
+-    threading.Thread(target=ask, daemon=True).start()
++    def both():
++        sync_time_zone()
++        sync_clock_format()
++    # lxc-attach and binder calls take a moment: not in the caller's thread
++    threading.Thread(target=both, daemon=True).start()
+ 
+ def localtime_paths():
+     # /etc/localtime and the symlinks it goes through: on Sailfish OS timed
+@@ -56,17 +91,36 @@ def on_settled():
+     pending_sync = 0
+     # The chain itself may have changed
+     watch()
+-    sync()
++    threading.Thread(target=sync_time_zone, daemon=True).start()
+     return GLib.SOURCE_REMOVE
+ 
++def on_dconf_notify(prefix, changes, tag):
++    # The changed keys are prefix + change; a prefix ending in "/" alone
++    # stands for everything below it
++    for change in changes:
++        key = prefix + change
++        if key == CLOCK_FORMAT_KEY or (key.endswith("/") and CLOCK_FORMAT_KEY.startswith(key)):
++            threading.Thread(target=sync_clock_format, daemon=True).start()
++            return
++
+ def start(args):
++    global session_args, dconf_match
++    session_args = args
+     watch()
++    try:
++        dconf_match = dbus.SessionBus().add_signal_receiver(
++            on_dconf_notify, signal_name="Notify", dbus_interface="ca.desrt.dconf.Writer")
++    except dbus.DBusException as e:
++        logging.debug("Not following dconf: %s", e)
+ 
+ def stop(args):
+-    global monitors, pending_sync
++    global monitors, pending_sync, dconf_match
+     for monitor in monitors:
+         monitor.cancel()
+     monitors = []
+     if pending_sync:
+         GLib.source_remove(pending_sync)
+         pending_sync = 0
++    if dconf_match:
++        dconf_match.remove()
++        dconf_match = None
+-- 
+2.53.0
+

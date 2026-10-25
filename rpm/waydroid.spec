@@ -1,6 +1,6 @@
 Name:           waydroid
 Version:        1.6.3
-Release:        4
+Release:        5
 Summary:        Container-based approach to boot a full Android system
 License:        GPLv3
 URL:            https://waydro.id/
@@ -29,6 +29,8 @@ Patch9:         0010-app_manager-Wait-for-Android-s-unlocked-user-before-.patch
 Patch10:        0011-notification_manager-Do-not-forward-Android-System-s.patch
 # Android's time zone follows the host's (it stayed GMT)
 Patch11:        0012-time_zone_manager-Keep-Android-s-time-zone-at-the-ho.patch
+# Sailfish OS: Android's 12/24-hour clock follows the host's setting
+Patch12:        0013-time_zone_manager-Follow-Sailfish-OS-s-24-hour-clock.patch
 
 BuildRequires:  systemd
 BuildRequires:  desktop-file-utils
