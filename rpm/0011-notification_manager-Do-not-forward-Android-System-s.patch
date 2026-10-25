@@ -1,0 +1,38 @@
+From 5959642c73bb6f9e2966ea7039fa04296c793f07 Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Sun, 25 Oct 2026 12:02:49 +0100
+Subject: [PATCH] notification_manager: Do not forward Android System's
+ notifications on Sailfish OS
+
+At every start of Android, its system (package "android") posts
+notifications about Waydroid's virtual devices: "Charging this device
+via USB", "Configure physical keyboard" and "USB debugging connected".
+On Sailfish OS they showed up in Lipstick's Events view each time.
+Do not forward notifications of the package "android".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/services/notification_manager.py | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/tools/services/notification_manager.py b/tools/services/notification_manager.py
+index 32cc865..edf48c8 100644
+--- a/tools/services/notification_manager.py
++++ b/tools/services/notification_manager.py
+@@ -30,6 +30,13 @@ def start(args, session):
+         listeners.append(listener)
+ 
+     def notify(replaces_id, app_name, package_name, summary, body, actions, image_data, category, suppress_sound, expire_timeout, resident, transient, urgency):
++        # Sailfish OS: Android System's notifications are about Waydroid's
++        # virtual devices and come at every start of Android ("Charging this
++        # device via USB", "Configure physical keyboard", "USB debugging
++        # connected"): not forwarded
++        if package_name == "android":
++            return INotifications.ID_NONE
++
+         # By reading the spec, I believe app_icon should be pointing to the desktop entry Icon=
+         # but when we set it plasmashell uses it in place of image-data.
+         # Ignore app_icon and use desktop-entry to show the app icon.
+-- 
+2.53.0
+

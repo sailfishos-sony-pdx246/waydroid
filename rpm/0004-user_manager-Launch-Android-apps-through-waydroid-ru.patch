@@ -1,0 +1,76 @@
+From 3995d9e3fbae39def8a4d2ccd2670e8098e783f2 Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Sun, 25 Oct 2026 11:32:50 +0100
+Subject: [PATCH] user_manager: Launch Android apps through waydroid-runner on
+ Sailfish OS
+
+On Sailfish OS, Android is shown in waydroid-runner's window, the
+Wayland compositor that Android draws into. "waydroid app launch" from
+a launcher would show Android in Lipstick instead, where the Android
+window gets no touch input, so the launchers were turned off.
+
+Write them again, as launchers that call the runner over D-Bus the way
+Sailfish OS's own launchers do (X-Maemo-Service, -Object-Path,
+-Method): Lipstick calls activateWindow with the app's package from
+X-Maemo-Fixed-Args, and the runner starts Android if needed, opens the
+app in its full UI and shows its window. They have no Exec key, so that
+Lipstick's app switcher shows no "launching" cover of its own for them,
+and X-Nemo-Single-Instance=no, so that Lipstick calls the runner instead
+of only raising a window it matched to the launcher. Without the runner
+there are no launchers, as before.
+
+Replaces "user_manager: Do not create per-app launchers on Sailfish OS".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/services/user_manager.py | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/tools/services/user_manager.py b/tools/services/user_manager.py
+index 517812f..e970162 100644
+--- a/tools/services/user_manager.py
++++ b/tools/services/user_manager.py
+@@ -21,6 +21,13 @@ def start(args, session, unlocked_cb=None):
+     waydroid_user_state_dir = Path(session["waydroid_user_state"])
+     waydroid_data_icons_dir = Path(session["waydroid_data"]) / "icons"
+ 
++    # Sailfish OS: Android is shown in waydroid-runner's window. The
++    # launchers call the runner over D-Bus, as Sailfish OS's own launchers
++    # do: it starts Android if needed, opens the app there and shows its
++    # window. Without the runner there are no launchers: "waydroid app
++    # launch" would show Android in Lipstick, where it gets no touch input.
++    runner_service_file = Path("/usr/share/dbus-1/services/org.sailfishosopen.WaydroidRunner.service")
++
+     system_apps = [
+         "com.android.calculator2",
+         "com.android.camera2",
+@@ -104,7 +111,7 @@ def start(args, session, unlocked_cb=None):
+                 showApp = True
+                 break
+ 
+-        if not showApp:
++        if not showApp or not runner_service_file.exists():
+             # Remove the desktop file if it exists and do not create a new one.
+             desktop_file_path.unlink(missing_ok=True)
+             return
+@@ -116,7 +123,16 @@ def start(args, session, unlocked_cb=None):
+ 
+         desktop_file.set_string("Desktop Entry", "Type", "Application")
+         desktop_file.set_string("Desktop Entry", "Name", appInfo["name"])
+-        desktop_file.set_string("Desktop Entry", "Exec", f"waydroid app launch {packageName}")
++        # No Exec: Lipstick calls activateWindow([package]) on the runner,
++        # without a "launching" cover of its own in the app switcher
++        with suppress(GLib.GError):
++            desktop_file.remove_key("Desktop Entry", "Exec")
++        desktop_file.set_string("Desktop Entry", "X-Maemo-Service", "org.sailfishosopen.WaydroidRunner")
++        desktop_file.set_string("Desktop Entry", "X-Maemo-Object-Path", "/org/sailfishosopen/WaydroidRunner")
++        desktop_file.set_string("Desktop Entry", "X-Maemo-Method", "org.sailfishosopen.WaydroidRunner.activateWindow")
++        desktop_file.set_string("Desktop Entry", "X-Maemo-Fixed-Args", packageName)
++        # The window is the runner's: always call it, never only raise it
++        desktop_file.set_string("Desktop Entry", "X-Nemo-Single-Instance", "no")
+         desktop_file.set_string("Desktop Entry", "Icon", str(waydroid_data_icons_dir / f"{packageName}.png"))
+         glib_key_file_prepend_string_list(desktop_file, "Desktop Entry", "Categories", ["X-WayDroid-App"])
+         desktop_file.set_string_list("Desktop Entry", "X-Purism-FormFactor", ["Workstation", "Mobile"])
+-- 
+2.53.0
+

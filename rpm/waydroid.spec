@@ -1,6 +1,6 @@
 Name:           waydroid
 Version:        1.6.3
-Release:        2
+Release:        3
 Summary:        Container-based approach to boot a full Android system
 License:        GPLv3
 URL:            https://waydro.id/
@@ -10,14 +10,23 @@ Patch0:         0001-Remove-apparmor-reference-in-config_3.patch
 # Upstream after 1.6.3: e7d73e7 (Halium 15+ detection), 5f19fe9 (post-stop hook)
 Patch1:         0002-initializer-Add-alternate-version-detection-logic-fo.patch
 Patch2:         0003-lxc-Fix-post-stop-hook-erroring-on-every-container-s.patch
-# Sailfish OS: no per-app launchers (replaces 0001-disable-user-manager.patch)
-Patch3:         0004-user_manager-Do-not-create-per-app-launchers-on-Sail.patch
+# Sailfish OS: per-app launchers call waydroid-runner, none without it
+# (replaces 0001-disable-user-manager.patch)
+Patch3:         0004-user_manager-Launch-Android-apps-through-waydroid-ru.patch
 # Safety on libhybris hosts: never pick the host's own binder nodes
 Patch4:         0005-drivers-Use-the-first-existing-binder-node-not-the-l.patch
 # Android 15+ vendors: bind a host-prepared vendor view if mounted
 Patch5:         0006-lxc-Bind-a-host-prepared-vendor-view-if-one-is-mount.patch
 # Sailfish OS: no host NFC features in the container (nfcd owns the controller)
 Patch6:         0007-lxc-Do-not-pass-the-host-s-NFC-features-on-Sailfish-.patch
+# Apps open in the full UI while it is shown (waydroid-runner's window)
+Patch7:         0008-app_manager-Keep-the-full-UI-when-it-is-shown.patch
+# Sailfish OS: notification icons; a tap shows waydroid-runner's window
+Patch8:         0009-notification_manager-App-icon-and-tap-on-Sailfish-OS.patch
+# App launches wait for Android's unlocked user (a launch during boot was lost)
+Patch9:         0010-app_manager-Wait-for-Android-s-unlocked-user-before-.patch
+# Sailfish OS: no Android System notifications (virtual devices, every boot)
+Patch10:        0011-notification_manager-Do-not-forward-Android-System-s.patch
 
 BuildRequires:  systemd
 BuildRequires:  desktop-file-utils

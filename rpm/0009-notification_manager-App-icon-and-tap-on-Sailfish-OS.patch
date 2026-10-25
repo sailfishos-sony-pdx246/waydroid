@@ -1,0 +1,74 @@
+From 8b77773763b62305939a69a507cc070833225373 Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Sun, 25 Oct 2026 11:33:53 +0100
+Subject: [PATCH] notification_manager: App icon and tap on Sailfish OS
+
+Lipstick, Sailfish OS's notification server, does not read the
+desktop-entry hint: an empty app_icon makes it look for a desktop file
+named after the sending process (python3), so Android's notifications
+had no icon. Pass the app's icon from Waydroid's icons directory as
+app_icon.
+
+A tap on a notification sends the "default" action to Android, which
+opens the notification's target, but nothing showed Android's window.
+On Sailfish OS that is waydroid-runner's window: give "default" the
+remote action hint x-nemo-remote-action-default, which makes Lipstick
+call the runner's Show() on the tap. Only for notifications that have
+a "default" action (a content intent), and only with the runner
+installed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/services/notification_manager.py | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/tools/services/notification_manager.py b/tools/services/notification_manager.py
+index c9c3b77..32cc865 100644
+--- a/tools/services/notification_manager.py
++++ b/tools/services/notification_manager.py
+@@ -4,6 +4,7 @@ import logging
+ import os
+ import threading
+ import tools.config
++from pathlib import Path
+ from tools.interfaces import INotifications
+ from gi.repository import GLib
+ import dbus
+@@ -13,6 +14,14 @@ bus_signals = []
+ 
+ def start(args, session):
+ 
++    # Sailfish OS: Lipstick shows app_icon as the app's icon and does not
++    # read desktop-entry. A tap on the notification shows Android's window
++    # in waydroid-runner (Lipstick's remote action for "default"), while
++    # Android opens the notification's target through ActionInvoked.
++    icons_dir = Path(session["waydroid_data"]) / "icons"
++    runner_service_file = Path("/usr/share/dbus-1/services/org.sailfishosopen.WaydroidRunner.service")
++    runner_show = "org.sailfishosopen.WaydroidRunner /org/sailfishosopen/WaydroidRunner org.sailfishosopen.WaydroidRunner Show"
++
+     def onListenerDeath(listener):
+         listeners.remove(listener)
+ 
+@@ -26,6 +35,10 @@ def start(args, session):
+         # Ignore app_icon and use desktop-entry to show the app icon.
+         # app_icon = f"file://{waydroid_data}/icons/{package_name}.png"
+         app_icon = ""
++        # Sailfish OS: Lipstick needs it (see above)
++        icon = icons_dir / f"{package_name}.png"
++        if icon.exists():
++            app_icon = str(icon)
+         actions_flat = [s for action in actions for s in (action.id, action.label)]
+         hints = {
+             "desktop-entry": f"waydroid.{package_name}",
+@@ -34,6 +47,8 @@ def start(args, session):
+             "urgency": dbus.types.Byte(urgency),
+             "suppress-sound": dbus.types.Boolean(suppress_sound),
+         }
++        if "default" in (action.id for action in actions) and runner_service_file.exists():
++            hints["x-nemo-remote-action-default"] = runner_show
+         if category:
+             hints["category"] = category
+         if image_data:
+-- 
+2.53.0
+

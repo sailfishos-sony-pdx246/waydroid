@@ -1,0 +1,56 @@
+From 588c20d644f7f8283ebb5e193b128a39088a4dab Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Sun, 25 Oct 2026 11:33:23 +0100
+Subject: [PATCH] app_manager: Keep the full UI when it is shown
+
+"waydroid app launch" and "waydroid app intent" set
+waydroid.active_apps to the app's package, which switches the display
+from the full UI to the app's own window. On Sailfish OS, Android is
+shown in waydroid-runner's full UI window, the only window Android can
+use there, and the launchers open Android apps in it.
+
+While the full UI is shown (waydroid.active_apps is "Waydroid", as
+show-full-ui sets it), launch the app or intent only: the app opens in
+the full UI, and Android's status bar and home screen stay available.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/actions/app_manager.py | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/tools/actions/app_manager.py b/tools/actions/app_manager.py
+index 9fceb11..071bca5 100644
+--- a/tools/actions/app_manager.py
++++ b/tools/actions/app_manager.py
+@@ -71,10 +71,19 @@ def maybeLaunchLater(args, launchNow):
+         logging.error("Starting waydroid session")
+         tools.actions.session_manager.start(args, launchNow, background=False)
+ 
++def fullUIShown(platformService):
++    # show-full-ui shows all of Android in one window (on Sailfish OS
++    # waydroid-runner's). Apps open there, instead of switching the display
++    # to the app's own window (waydroid.active_apps = the package).
++    return platformService.getprop("waydroid.active_apps", "none") == "Waydroid"
++
+ def launch(args):
+     def justLaunch():
+         platformService = IPlatform.get_service(args)
+         if platformService:
++            if fullUIShown(platformService):
++                platformService.launchApp(args.PACKAGE)
++                return
+             platformService.setprop("waydroid.active_apps", args.PACKAGE)
+             platformService.launchApp(args.PACKAGE)
+             multiwin = platformService.getprop(
+@@ -136,7 +145,7 @@ def intent(args):
+         platformService = IPlatform.get_service(args)
+         if platformService:
+             ret = platformService.launchIntent(args.ACTION, args.URI)
+-            if ret == "":
++            if ret == "" or fullUIShown(platformService):
+                 return
+             pkg = ret if ret != "android" else "Waydroid"
+             platformService.setprop("waydroid.active_apps", pkg)
+-- 
+2.53.0
+

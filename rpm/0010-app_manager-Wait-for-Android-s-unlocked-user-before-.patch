@@ -1,0 +1,131 @@
+From 2269fe2156b99b8dbc589674612bde995569b0b1 Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Sun, 25 Oct 2026 11:49:29 +0100
+Subject: [PATCH] app_manager: Wait for Android's unlocked user before
+ launching an app
+
+Android starts an app only for an unlocked user: before that, the
+launch intent of an app that is not direct-boot aware does not
+resolve, and the launch does nothing. The user is unlocked some seconds
+after Android's platform service answers. An app launch right after the
+session has started, for example from a launcher while Android boots,
+was lost: Android showed its home screen instead.
+
+A session started for the launch already waits for the unlock
+(unlocked_cb). For a running session, the session now records the
+unlock that Android reports, and offers it as IsUserUnlocked() on its
+D-Bus object. "waydroid app launch" and "waydroid app intent" ask it
+until the user is unlocked, for up to two minutes, before launching.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/actions/app_manager.py     | 22 +++++++++++++++++++---
+ tools/actions/session_manager.py |  4 ++++
+ tools/services/user_manager.py   |  5 +++++
+ 3 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/tools/actions/app_manager.py b/tools/actions/app_manager.py
+index 071bca5..01d7626 100644
+--- a/tools/actions/app_manager.py
++++ b/tools/actions/app_manager.py
+@@ -59,13 +59,29 @@ def remove(args):
+     except dbus.DBusException:
+         logging.error("WayDroid session is stopped")
+ 
+-def maybeLaunchLater(args, launchNow):
++def waitUserUnlocked():
++    # Android starts apps only for an unlocked user, which follows its boot
++    # by some seconds. A session started for the launch calls launchNow at
++    # that point; a running one is asked.
++    for _ in range(240):
++        try:
++            if tools.helpers.ipc.DBusSessionService().IsUserUnlocked():
++                return
++        except dbus.DBusException:
++            # Session without IsUserUnlocked, or gone
++            return
++        time.sleep(0.5)
++    logging.warning("Android's user is still locked. Trying to launch anyways...")
++
++def maybeLaunchLater(args, launchNow, wait_unlocked=False):
+     try:
+         tools.helpers.ipc.DBusSessionService()
+         try:
+             tools.helpers.ipc.DBusContainerService().Unfreeze()
+         except Exception:
+             logging.error("Failed to unfreeze container. Trying to launch anyways...")
++        if wait_unlocked:
++            waitUserUnlocked()
+         launchNow()
+     except dbus.DBusException:
+         logging.error("Starting waydroid session")
+@@ -96,7 +112,7 @@ def launch(args):
+                     2, "policy_control", "immersive.full=*")
+         else:
+             logging.error("Failed to access IPlatform service")
+-    maybeLaunchLater(args, justLaunch)
++    maybeLaunchLater(args, justLaunch, wait_unlocked=True)
+ 
+ def list(args):
+     try:
+@@ -159,4 +175,4 @@ def intent(args):
+                     2, "policy_control", "immersive.full=*")
+         else:
+             logging.error("Failed to access IPlatform service")
+-    maybeLaunchLater(args, justLaunch)
++    maybeLaunchLater(args, justLaunch, wait_unlocked=True)
+diff --git a/tools/actions/session_manager.py b/tools/actions/session_manager.py
+index 4e8426c..10aec23 100644
+--- a/tools/actions/session_manager.py
++++ b/tools/actions/session_manager.py
+@@ -24,6 +24,10 @@ class DbusSessionManager(dbus.service.Object):
+         do_stop(self.args, self.looper)
+         stop_container(quit_session=False)
+ 
++    @dbus.service.method("id.waydro.SessionManager", in_signature='', out_signature='b')
++    def IsUserUnlocked(self):
++        return services.user_manager.user_unlocked.is_set()
++
+ def handle_disconnect(args, looper):
+     do_stop(args, looper)
+     stop_container(quit_session=False)
+diff --git a/tools/services/user_manager.py b/tools/services/user_manager.py
+index e970162..4d27c01 100644
+--- a/tools/services/user_manager.py
++++ b/tools/services/user_manager.py
+@@ -11,6 +11,8 @@ from tools.interfaces import IPlatform
+ from gi.repository import GLib
+ 
+ stopping = False
++# Set when Android reports its user as unlocked: only then it starts apps
++user_unlocked = threading.Event()
+ 
+ 
+ def start(args, session, unlocked_cb=None):
+@@ -149,6 +151,7 @@ def start(args, session, unlocked_cb=None):
+     def userUnlocked(uid):
+         cfg = tools.config.load(args)
+         logging.info("Android with user {} is ready".format(uid))
++        user_unlocked.set()
+ 
+         user_migration()
+ 
+@@ -183,6 +186,7 @@ def start(args, session, unlocked_cb=None):
+ 
+     global stopping
+     stopping = False
++    user_unlocked.clear()
+     args.user_manager = threading.Thread(target=service_thread)
+     args.user_manager.start()
+ 
+@@ -190,6 +194,7 @@ def start(args, session, unlocked_cb=None):
+ def stop(args):
+     global stopping
+     stopping = True
++    user_unlocked.clear()
+     try:
+         if args.userMonitorLoop:
+             args.userMonitorLoop.quit()
+-- 
+2.53.0
+
