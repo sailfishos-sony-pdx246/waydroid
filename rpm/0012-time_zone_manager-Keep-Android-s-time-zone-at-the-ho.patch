@@ -1,0 +1,239 @@
+From 7071adb02dbe81b162c96e85a11f8d03361a875e Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Sun, 25 Oct 2026 13:16:41 +0100
+Subject: [PATCH] time_zone_manager: Keep Android's time zone at the host's
+
+Android in Waydroid stays on GMT, SystemServer's default for an unset
+persist.sys.timezone: nothing passes the host's zone on.
+
+The container manager gets SyncTimeZone(). It takes the zone's name from
+the zone file that /etc/localtime resolves to, also through further
+symlinks (Sailfish OS: /etc/localtime -> /var/lib/timed/localtime), else
+from /etc/timezone, and sets it through Android's AlarmManager (cmd alarm
+set-timezone, with lxc-attach), which also tells the running apps;
+setting persist.sys.timezone alone does not. A zone Android does not know
+becomes GMT without an error, so the result is read back. The method
+takes no zone, so a caller can only ever set the host's own. Android's
+kernel time zone update is a no-op: the container's seccomp profile
+turns settimeofday into one.
+
+The session calls it once Android's user is unlocked, and whenever
+/etc/localtime or a symlink it goes through changes (a GIO file monitor
+on each).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/actions/container_manager.py  | 55 ++++++++++++++++++++++
+ tools/actions/session_manager.py    |  2 +
+ tools/services/__init__.py          |  1 +
+ tools/services/time_zone_manager.py | 72 +++++++++++++++++++++++++++++
+ tools/services/user_manager.py      |  2 +
+ 5 files changed, 132 insertions(+)
+ create mode 100644 tools/services/time_zone_manager.py
+
+diff --git a/tools/actions/container_manager.py b/tools/actions/container_manager.py
+index 6e088bb..fdcc641 100644
+--- a/tools/actions/container_manager.py
++++ b/tools/actions/container_manager.py
+@@ -4,6 +4,7 @@
+ import logging
+ import os
+ import glob
++import re
+ import signal
+ import tools.config
+ from contextlib import suppress
+@@ -53,6 +54,14 @@ class DbusContainerManager(dbus.service.Object):
+             raise RuntimeError("Waydroid is not initialized")
+         unfreeze(self.args)
+ 
++    # Takes no zone: it can only ever set the host's own
++    @helpers.logging.log_exceptions
++    @dbus.service.method("id.waydro.ContainerManager", in_signature='', out_signature='')
++    def SyncTimeZone(self):
++        if not actions.initializer.is_initialized(self.args):
++            raise RuntimeError("Waydroid is not initialized")
++        sync_time_zone(self.args)
++
+     @helpers.logging.log_exceptions
+     @dbus.service.method("id.waydro.ContainerManager", in_signature='', out_signature='a{ss}')
+     def GetSession(self):
+@@ -294,3 +303,49 @@ def unfreeze(args):
+         helpers.lxc.unfreeze(args)
+         while helpers.lxc.status(args) == "FROZEN":
+             pass
++
++def host_time_zone():
++    # The zone file /etc/localtime resolves to, also through further symlinks
++    # (Sailfish OS: /etc/localtime -> /var/lib/timed/localtime ->
++    # /usr/share/zoneinfo/Europe/Berlin), else /etc/timezone
++    path = os.path.realpath("/etc/localtime")
++    if "/zoneinfo/" in path:
++        zone = path.split("/zoneinfo/", 1)[1]
++        for prefix in ["posix/", "right/"]:
++            zone = zone.removeprefix(prefix)
++    else:
++        try:
++            with open("/etc/timezone") as f:
++                zone = f.readline().strip()
++        except OSError:
++            return None
++    if not re.fullmatch(r"[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*", zone):
++        return None
++    return zone
++
++def sync_time_zone(args):
++    # Through Android's AlarmManager, as Android's own settings do: it also
++    # tells the running apps, which setting persist.sys.timezone does not
++    zone = host_time_zone()
++    if zone is None:
++        logging.warning("Cannot tell the host's time zone from /etc/localtime")
++        return
++    if helpers.lxc.status(args) != "RUNNING":
++        return
++    attach = ["lxc-attach", "-P", tools.config.defaults["lxc"],
++              "-n", "waydroid", "--clear-env", "--"]
++
++    def android_time_zone():
++        return tools.helpers.run.user(args, attach + ["/system/bin/getprop", "persist.sys.timezone"],
++                                      output_return=True, check=False).strip()
++
++    if android_time_zone() == zone:
++        return
++    tools.helpers.run.user(args, attach + ["/system/bin/cmd", "alarm", "set-timezone", zone],
++                           check=False)
++    # A zone Android does not know becomes GMT, without an error
++    current = android_time_zone()
++    if current != zone:
++        logging.warning("Android's time zone is {}, not the host's {}".format(current, zone))
++        return
++    logging.info("Android's time zone: " + zone)
+diff --git a/tools/actions/session_manager.py b/tools/actions/session_manager.py
+index 10aec23..41e1991 100644
+--- a/tools/actions/session_manager.py
++++ b/tools/actions/session_manager.py
+@@ -111,12 +111,14 @@ def start(args, unlocked_cb=None, background=True):
+     services.user_manager.start(args, session, unlocked_cb)
+     services.clipboard_manager.start(args)
+     services.notification_manager.start(args, session)
++    services.time_zone_manager.start(args)
+     service(args, mainloop)
+ 
+ def do_stop(args, looper):
+     services.user_manager.stop(args)
+     services.clipboard_manager.stop(args)
+     services.notification_manager.stop(args)
++    services.time_zone_manager.stop(args)
+     looper.quit()
+ 
+ def stop(args):
+diff --git a/tools/services/__init__.py b/tools/services/__init__.py
+index 57d1032..282c938 100644
+--- a/tools/services/__init__.py
++++ b/tools/services/__init__.py
+@@ -4,3 +4,4 @@ from tools.services.user_manager import start, stop
+ from tools.services.clipboard_manager import start, stop
+ from tools.services.hardware_manager import start, stop
+ from tools.services.notification_manager import start, stop
++from tools.services.time_zone_manager import start, stop
+diff --git a/tools/services/time_zone_manager.py b/tools/services/time_zone_manager.py
+new file mode 100644
+index 0000000..3b52062
+--- /dev/null
++++ b/tools/services/time_zone_manager.py
+@@ -0,0 +1,72 @@
++# SPDX-FileCopyrightText: Johannes Meyer zum Alten Borgloh
++# SPDX-License-Identifier: GPL-3.0-or-later
++# Keeps Android's time zone at the host's. The container manager sets it
++# (SyncTimeZone: Android's AlarmManager through lxc-attach, which needs root)
++# once Android's user is unlocked, and whenever /etc/localtime or a symlink
++# it goes through changes.
++import logging
++import os
++import threading
++import dbus
++import tools.helpers.ipc
++from gi.repository import Gio, GLib
++
++monitors = []
++pending_sync = 0
++
++def sync():
++    def ask():
++        try:
++            tools.helpers.ipc.DBusContainerService().SyncTimeZone()
++        except dbus.DBusException as e:
++            logging.warning("Failed to set Android's time zone: %s", e)
++    # lxc-attach takes a moment: not in the caller's thread
++    threading.Thread(target=ask, daemon=True).start()
++
++def localtime_paths():
++    # /etc/localtime and the symlinks it goes through: on Sailfish OS timed
++    # replaces /var/lib/timed/localtime, which /etc/localtime points to
++    paths = ["/etc/localtime"]
++    while os.path.islink(paths[-1]):
++        target = os.path.join(os.path.dirname(paths[-1]), os.readlink(paths[-1]))
++        if target in paths or not os.path.islink(target):
++            break
++        paths.append(target)
++    return paths
++
++def watch():
++    global monitors
++    for monitor in monitors:
++        monitor.cancel()
++    monitors = []
++    for path in localtime_paths():
++        monitor = Gio.File.new_for_path(path).monitor_file(Gio.FileMonitorFlags.WATCH_MOVES, None)
++        monitor.connect("changed", on_changed)
++        monitors.append(monitor)
++
++def on_changed(monitor, file, other_file, event_type):
++    # A replaced link comes as several events: act once they are over
++    global pending_sync
++    if pending_sync:
++        GLib.source_remove(pending_sync)
++    pending_sync = GLib.timeout_add(500, on_settled)
++
++def on_settled():
++    global pending_sync
++    pending_sync = 0
++    # The chain itself may have changed
++    watch()
++    sync()
++    return GLib.SOURCE_REMOVE
++
++def start(args):
++    watch()
++
++def stop(args):
++    global monitors, pending_sync
++    for monitor in monitors:
++        monitor.cancel()
++    monitors = []
++    if pending_sync:
++        GLib.source_remove(pending_sync)
++        pending_sync = 0
+diff --git a/tools/services/user_manager.py b/tools/services/user_manager.py
+index 4d27c01..ed5e747 100644
+--- a/tools/services/user_manager.py
++++ b/tools/services/user_manager.py
+@@ -8,6 +8,7 @@ from pathlib import Path
+ from contextlib import suppress
+ from tools.interfaces import IUserMonitor
+ from tools.interfaces import IPlatform
++from tools.services import time_zone_manager
+ from gi.repository import GLib
+ 
+ stopping = False
+@@ -152,6 +153,7 @@ def start(args, session, unlocked_cb=None):
+         cfg = tools.config.load(args)
+         logging.info("Android with user {} is ready".format(uid))
+         user_unlocked.set()
++        time_zone_manager.sync()
+ 
+         user_migration()
+ 
+-- 
+2.53.0
+
