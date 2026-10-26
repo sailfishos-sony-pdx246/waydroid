@@ -1,0 +1,65 @@
+From 61d3be5d3bd2f526c154daa43ac27dee78004703 Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Mon, 26 Oct 2026 19:20:05 +0100
+Subject: [PATCH] time_zone_manager: Make the binder call from the main loop
+
+sync_clock_format() ran IPlatform.get_service() and settingsPutString()
+in a thread of its own. libgbinder's objects work through the GLib main
+context that the session's main loops run: made and dropped outside
+them, they raced those loops, and the session process crashed with a
+segfault, so far always right after Android's user unlock (4 of 17
+starts on a Sony Xperia 10 VI; faulthandler: sync_clock_format, at its
+IPlatform.get_service()). waydroid-runner then quit with its session,
+Android lost its Wayland display, and its composer aborted.
+
+Make the binder call from the main loop (GLib.idle_add), at the user
+unlock and when the setting changes. The D-Bus call to the container
+manager, which waits for lxc-attach, keeps its thread.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/services/time_zone_manager.py | 20 ++++++++++++++------
+ 1 file changed, 14 insertions(+), 6 deletions(-)
+
+diff --git a/tools/services/time_zone_manager.py b/tools/services/time_zone_manager.py
+index 4263b44..dcff231 100644
+--- a/tools/services/time_zone_manager.py
++++ b/tools/services/time_zone_manager.py
+@@ -51,12 +51,20 @@ def sync_clock_format():
+     if platformService:
+         platformService.settingsPutString(SETTINGS_SYSTEM, "time_12_24", value)
+ 
+-def sync():
+-    def both():
+-        sync_time_zone()
++def sync_clock_format_later():
++    # libgbinder's objects work through the GLib main context that the
++    # session's main loops run: made and dropped in a thread of their own,
++    # they raced those loops and the session crashed (a segfault right after
++    # Android's user unlock). So the binder call goes through the main loop.
++    def once():
+         sync_clock_format()
+-    # lxc-attach and binder calls take a moment: not in the caller's thread
+-    threading.Thread(target=both, daemon=True).start()
++        return GLib.SOURCE_REMOVE
++    GLib.idle_add(once)
++
++def sync():
++    # lxc-attach takes a moment: not in the caller's thread
++    threading.Thread(target=sync_time_zone, daemon=True).start()
++    sync_clock_format_later()
+ 
+ def localtime_paths():
+     # /etc/localtime and the symlinks it goes through: on Sailfish OS timed
+@@ -100,7 +108,7 @@ def on_dconf_notify(prefix, changes, tag):
+     for change in changes:
+         key = prefix + change
+         if key == CLOCK_FORMAT_KEY or (key.endswith("/") and CLOCK_FORMAT_KEY.startswith(key)):
+-            threading.Thread(target=sync_clock_format, daemon=True).start()
++            sync_clock_format_later()
+             return
+ 
+ def start(args):
+-- 
+2.53.0
+

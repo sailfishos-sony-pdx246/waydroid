@@ -1,0 +1,88 @@
+From d5019313581ebce86f017395a2d2629e718a4997 Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Mon, 26 Oct 2026 18:47:39 +0100
+Subject: [PATCH] images: Fix the composer start race of the 2026-09-27 vendor
+ image
+
+The hwcomposer of the lineage-20.0-20260927 HALIUM_13 vendor image
+(waydroid/android_hardware_waydroid before 4aee4c8d95) calls
+configureRpcThreadpool(1, true) from its binder thread. The composer
+service has configured its HIDL thread pool for 4 threads before it
+loads the HWC, and starts the pool when it registers IComposer (hidl-gen
+proxies start it before a transaction with an interface argument). When
+the registration comes first, the call shrinks a started pool and
+libhwbinder aborts the composer ("Binder threadpool cannot be shrunk
+after starting"); init restarts it, and SurfaceFlinger with it, 5 s
+later. The service's main thread runs SCHED_FIFO, so the HWC's thread
+often loses: on a Sony Xperia 10 VI, hidden starts with the display off
+took 96, 56 and 28 s (14, 6 and 0 aborts).
+
+When the vendor image's hwcomposer.waydroid.so is that build (by
+sha256), bind a copy over it with an arm64 NOP in place of the call, as
+upstream's fix removes it: the same starts took 28 s each, without an
+abort. Other builds are left as they are.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/helpers/images.py | 38 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/tools/helpers/images.py b/tools/helpers/images.py
+index 36bd09b..87b109e 100644
+--- a/tools/helpers/images.py
++++ b/tools/helpers/images.py
+@@ -159,6 +159,43 @@ def make_prop(args, cfg, full_props_path):
+             f.write(prop + "\n")
+     os.chmod(full_props_path, 0o644)
+ 
++# Builds of the vendor image's hwcomposer whose binder thread calls
++# configureRpcThreadpool(1, true), by sha256: the file offset of that call.
++# The composer service has configured its thread pool for 4 threads before it
++# loads the HWC, and starts it when it registers IComposer; a call after that
++# shrinks a started pool, which aborts the composer ("Binder threadpool cannot
++# be shrunk after starting"), and init restarts it 5 s later. Upstream removed
++# the call in android_hardware_waydroid 4aee4c8d95 (2026-10-19).
++HWCOMPOSER_POOL_CALLS = {
++    # lineage-20.0-20260927-HALIUM_13-waydroid_arm64-vendor
++    "c5847fd6b1228afb803f36a0818d037ce65369e6b95e96d85666b67f2158463f": 0x3eee8,
++}
++
++def fix_hwcomposer(args):
++    """
++    Bind a copy of a known hwcomposer build over it, with a NOP in place of
++    its thread pool call, as upstream's fix does.
++    """
++    path = tools.config.defaults["rootfs"] + "/vendor/lib64/hw/hwcomposer.waydroid.so"
++    try:
++        with open(path, "rb") as f:
++            data = f.read()
++    except OSError:
++        return
++    offset = HWCOMPOSER_POOL_CALLS.get(hashlib.sha256(data).hexdigest())
++    if offset is None:
++        return
++    # An arm64 BL instruction (100101 + imm26), little endian
++    if data[offset + 3] & 0xfc != 0x94:
++        logging.warning("hwcomposer: no call at {:#x}, not changed".format(offset))
++        return
++    fixed = args.work + "/hwcomposer.waydroid.so"
++    with open(fixed, "wb") as f:
++        f.write(data[:offset] + bytes.fromhex("1f2003d5") + data[offset + 4:])
++    os.chmod(fixed, 0o644)
++    helpers.mount.bind_file(args, fixed, path)
++    logging.info("hwcomposer: using a copy without its thread pool call")
++
+ def mount_rootfs(args, images_dir, session):
+     cfg = tools.config.load(args)
+     helpers.mount.mount(args, images_dir + "/system.img",
+@@ -199,6 +236,7 @@ def mount_rootfs(args, images_dir, session):
+     make_prop(args, session, args.work + "/waydroid.prop")
+     helpers.mount.bind_file(args, args.work + "/waydroid.prop",
+                             tools.config.defaults["rootfs"] + "/vendor/waydroid.prop")
++    fix_hwcomposer(args)
+ 
+ def umount_rootfs(args):
+     helpers.mount.umount_all(args, tools.config.defaults["rootfs"])
+-- 
+2.53.0
+
