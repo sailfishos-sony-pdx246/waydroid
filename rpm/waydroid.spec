@@ -1,6 +1,6 @@
 Name:           waydroid
 Version:        1.6.3
-Release:        6
+Release:        7
 Summary:        Container-based approach to boot a full Android system
 License:        GPLv3
 URL:            https://waydro.id/
@@ -35,6 +35,8 @@ Patch12:        0013-time_zone_manager-Follow-Sailfish-OS-s-24-hour-clock.patch
 Patch13:        0014-images-Fix-the-composer-start-race-of-the-2026-09-27.patch
 # 0013's binder call from a thread of its own crashed the session at times
 Patch14:        0015-time_zone_manager-Make-the-binder-call-from-the-main.patch
+# init on an empty pre-installed images folder: no crash (upstream 2e0d6ab144)
+Patch15:        0016-initializer-do-not-abort-when-a-preinstalled-image-d.patch
 
 BuildRequires:  systemd
 BuildRequires:  desktop-file-utils
