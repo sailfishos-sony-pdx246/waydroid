@@ -1,0 +1,3 @@
+# Waydroid's container service starts through D-Bus activation when the
+# Waydroid app or a waydroid command calls it, not at boot.
+disable waydroid-container.service

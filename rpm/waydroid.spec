@@ -1,6 +1,6 @@
 Name:           waydroid
 Version:        1.6.3
-Release:        7
+Release:        8
 Summary:        Container-based approach to boot a full Android system
 License:        GPLv3
 URL:            https://waydro.id/
@@ -104,6 +104,8 @@ make install DESTDIR=%{buildroot} USE_SYSTEMD=0
 install -D -m644 ../config/waydroid-container.service %{buildroot}/%{_unitdir}/waydroid-container.service
 install -D -m644 ../config/waydroid-session.service %{buildroot}/%{_userunitdir}/waydroid-session.service
 install -D -m644 ../config/waydroid.conf %{buildroot}/etc/modules-load.d/waydroid.conf
+# The container service is not enabled at boot, also where presets are applied
+install -D -m644 ../config/waydroid.preset %{buildroot}%{_prefix}/lib/systemd/system-preset/80-waydroid.preset
 
 # Settings files
 install -D -m644 ../settings/waydroid.json %{buildroot}/usr/share/jolla-settings/entries/waydroid.json
@@ -140,7 +142,11 @@ fi
 %post
 systemctl daemon-reload
 systemctl-user daemon-reload
-systemctl enable waydroid-container
+# D-Bus activation (system-services/id.waydro.Container.service, through
+# systemd) starts the container service when something calls it: the Waydroid
+# app's setup and session start, waydroid's own commands. Not at boot, so that
+# a phone that never uses Android runs no Waydroid. Earlier versions enabled it.
+systemctl disable waydroid-container.service >/dev/null 2>&1 || :
 
 %posttrans
 # Restart a running container service, so it does not keep running the old
@@ -158,6 +164,7 @@ waydroid upgrade -o || :
 %{_bindir}/waydroid
 %{_prefix}/lib/waydroid
 %{_unitdir}/waydroid-container.service
+%{_prefix}/lib/systemd/system-preset/80-waydroid.preset
 %{_datadir}/dbus-1/
 %{_datadir}/applications/
 # show-full-ui on Lipstick's direct display: only with -settings
