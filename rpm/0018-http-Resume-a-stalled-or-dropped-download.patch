@@ -1,0 +1,128 @@
+From 00d17b41e65663fe43c0b887d90f08d5f2ff3fa9 Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Sat, 21 Nov 2026 09:56:41 +0100
+Subject: [PATCH] http: Resume a stalled or dropped download
+
+An image download is about 1 GB, and download() called urlopen() without a
+timeout: when a mirror stopped sending in the middle (SourceForge, 457 of
+912 MB), the read waited forever and waydroid init hung at "Downloading"
+with no error. retrieve() had no timeout either.
+
+Now a read that gets nothing for 30 s, or a connection that ends before
+Content-Length, is resumed where it stopped with an HTTP Range request
+(redirects keep the header, so a mirror can be picked again); a server
+that ignores the range sends the file again from the start, and a 5xx is
+retried. After 5 retries in a row without getting further the error is
+raised as before. The image's SHA-256 is still checked after the
+download. retrieve() reports a timeout as a network error (-2).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/helpers/http.py | 63 ++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 54 insertions(+), 9 deletions(-)
+
+diff --git a/tools/helpers/http.py b/tools/helpers/http.py
+index 9131fb7..b6c5808 100644
+--- a/tools/helpers/http.py
++++ b/tools/helpers/http.py
+@@ -1,6 +1,7 @@
+ # Copyright 2021 Oliver Smith
+ # SPDX-License-Identifier: GPL-3.0-or-later
+ import hashlib
++import http.client
+ import logging
+ import os
+ import shutil
+@@ -10,6 +11,11 @@ import urllib.request
+ import tools.helpers.run
+ import time
+ 
++# Seconds without data before a connection counts as stalled, and how often a
++# download is resumed in a row without getting further
++TIMEOUT = 30
++RETRIES = 5
++
+ 
+ def download(args, url, prefix, cache=True, loglevel=logging.INFO,
+              allow_404=False):
+@@ -103,15 +109,53 @@ def download(args, url, prefix, cache=True, loglevel=logging.INFO,
+             return path
+         tools.helpers.run.user(args, ["rm", path])
+ 
+-    # Download the file
++    # Download the file. Images are about 1 GB, and a mirror can stall or drop
++    # the connection: a read that gets nothing for TIMEOUT seconds, or a
++    # connection that ends early, is resumed where it stopped (HTTP Range),
++    # RETRIES times in a row without getting further. Without a timeout the
++    # download waited forever.
+     logging.log(loglevel, "Downloading " + url)
+     try:
+-        with urllib.request.urlopen(url) as response:
+-            with open(path, "wb") as handle:
+-                # adding daemon=True will kill this thread if main thread is killed
+-                # else progress_bar will continue to show even if user cancels download by ctrl+c
+-                threading.Thread(target=progress, args=(response.headers.get('content-length'), path), daemon=True).start()
+-                shutil.copyfileobj(response, handle)
++        with open(path, "wb") as handle:
++            total = None
++            retries = 0
++            while True:
++                done = handle.tell()
++                request = urllib.request.Request(url)
++                if done:
++                    request.add_header("Range", "bytes={}-".format(done))
++                try:
++                    with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
++                        if done and response.status != 206:
++                            # The server ignored the range: start again
++                            handle.seek(0)
++                            handle.truncate()
++                            done = 0
++                        if total is None:
++                            length = response.headers.get('content-length')
++                            if length is not None:
++                                total = done + int(length)
++                                # adding daemon=True will kill this thread if main thread is killed
++                                # else progress_bar will continue to show even if user cancels download by ctrl+c
++                                threading.Thread(target=progress, args=(total, path), daemon=True).start()
++                        shutil.copyfileobj(response, handle)
++                    if total is None or handle.tell() >= total:
++                        break
++                    raise http.client.IncompleteRead(b"", total - handle.tell())
++                except urllib.error.HTTPError as e:
++                    if e.code < 500:
++                        raise
++                    error = e
++                except (OSError, http.client.HTTPException) as e:
++                    error = e
++                if handle.tell() > done:
++                    retries = 0
++                retries += 1
++                if retries > RETRIES:
++                    raise error
++                logging.info("Download interrupted ({}), resuming at {} MB".format(
++                    error, fromBytesToMB(handle.tell())))
++                time.sleep(min(5 * retries, TIMEOUT))
+     # Handle 404
+     except urllib.error.HTTPError as e:
+         if e.code == 404 and allow_404:
+@@ -139,7 +183,7 @@ def retrieve(url, headers=None):
+ 
+     try:
+         req = urllib.request.Request(url, headers=headers)
+-        with urllib.request.urlopen(req) as response:
++        with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
+             return 200, response.read()
+     # Handle malformed URL
+     except ValueError:
+@@ -147,5 +191,6 @@ def retrieve(url, headers=None):
+     # Handle 404
+     except urllib.error.HTTPError as e:
+         return e.code, ""
+-    except urllib.error.URLError:
++    # No connection, or it stalled (a timeout while reading is no URLError)
++    except (OSError, http.client.HTTPException):
+         return -2, ""
+-- 
+2.53.0
+

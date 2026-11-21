@@ -1,6 +1,6 @@
 Name:           waydroid
 Version:        1.6.3
-Release:        9
+Release:        10
 Summary:        Container-based approach to boot a full Android system
 License:        GPLv3
 URL:            https://waydro.id/
@@ -40,6 +40,8 @@ Patch15:        0016-initializer-do-not-abort-when-a-preinstalled-image-d.patch
 # Sailfish OS: Remove over D-Bus undoes init (the Waydroid app's "Remove
 # Android"); the packages are part of the image
 Patch16:        0017-initializer-Remove-Android-over-D-Bus-on-Sailfish-OS.patch
+# A stalled or dropped image download resumes (HTTP Range) instead of hanging
+Patch17:        0018-http-Resume-a-stalled-or-dropped-download.patch
 
 BuildRequires:  systemd
 BuildRequires:  desktop-file-utils
@@ -135,11 +137,14 @@ rm -f %{buildroot}/etc/xdg/menus/applications-merged/waydroid.menu
 rm -rf $RPM_BUILD_ROOT
 
 %pre
-if [ $1 == 2 ]; then
+# Only where Android is set up: without the container's config (Waydroid
+# dormant in an image, or after Remove Android) the grep and the sed failed,
+# and with them the upgrade.
+if [ $1 -ge 2 ] && [ -f %{_sharedstatedir}/waydroid/lxc/waydroid/config ]; then
 # Existing config might have apparmor reference, remove it on upgrade since SailfishOS doesn't use apparmor
   sed -i '/apparmor/d' %{_sharedstatedir}/waydroid/lxc/waydroid/config || :
 # Existing config pre 1.4 might not have config_session included. Append it if not, after config_nodes.
-  grep config_session %{_sharedstatedir}/waydroid/lxc/waydroid/config || sed -e '/config_nodes/a\' -e 'lxc.include = %{_sharedstatedir}/waydroid/lxc/waydroid/config_session' -i %{_sharedstatedir}/waydroid/lxc/waydroid/config
+  grep -q config_session %{_sharedstatedir}/waydroid/lxc/waydroid/config || sed -e '/config_nodes/a\' -e 'lxc.include = %{_sharedstatedir}/waydroid/lxc/waydroid/config_session' -i %{_sharedstatedir}/waydroid/lxc/waydroid/config || :
 fi
 
 %post
