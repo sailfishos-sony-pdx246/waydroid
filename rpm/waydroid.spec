@@ -1,6 +1,6 @@
 Name:           waydroid
 Version:        1.6.3
-Release:        8
+Release:        9
 Summary:        Container-based approach to boot a full Android system
 License:        GPLv3
 URL:            https://waydro.id/
@@ -37,6 +37,9 @@ Patch13:        0014-images-Fix-the-composer-start-race-of-the-2026-09-27.patch
 Patch14:        0015-time_zone_manager-Make-the-binder-call-from-the-main.patch
 # init on an empty pre-installed images folder: no crash (upstream 2e0d6ab144)
 Patch15:        0016-initializer-do-not-abort-when-a-preinstalled-image-d.patch
+# Sailfish OS: Remove over D-Bus undoes init (the Waydroid app's "Remove
+# Android"); the packages are part of the image
+Patch16:        0017-initializer-Remove-Android-over-D-Bus-on-Sailfish-OS.patch
 
 BuildRequires:  systemd
 BuildRequires:  desktop-file-utils
@@ -158,7 +161,10 @@ waydroid upgrade -o || :
 
 %files
 %defattr(-,root,root,-)
-%attr(-, defaultuser, users)/home/waydroid
+# Waydroid's work directory (/var/lib/waydroid): only its root service writes
+# there. root, not the device user: in an image that user does not exist yet
+# when this package is installed, and rpm -V would report the owner.
+%dir /home/waydroid
 %{_sharedstatedir}/waydroid
 %{_sysconfdir}/modules-load.d/waydroid.conf
 %{_bindir}/waydroid

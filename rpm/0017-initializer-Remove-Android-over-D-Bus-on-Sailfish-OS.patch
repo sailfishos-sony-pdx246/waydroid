@@ -1,0 +1,195 @@
+From a387930937757ab7d12089379874e142654db247 Mon Sep 17 00:00:00 2001
+From: Johannes Meyer zum Alten Borgloh <code@jzab.de>
+Date: Sat, 21 Nov 2026 08:25:08 +0100
+Subject: [PATCH] initializer: Remove Android over D-Bus on Sailfish OS
+
+On Sailfish OS, Waydroid's packages can be part of the image (pdx246
+since its release of 2026-11-20): removing them is no longer the way to
+free Android's space or to start over. id.waydro.Initializer.Remove
+undoes init, for the Waydroid app's "Remove Android":
+
+- it stops a running setup, the container and its session (SIGUSR1,
+  then up to 5 s for the session to quit);
+- it removes what init and the container made in the work directory:
+  the upgrader's list, the overlays and the old session.cfg. Not the
+  log, and nothing else there: pdx246 mounts its vendor view below it;
+- it removes the caller's Waydroid state, with Android's data (owned by
+  Android's users, so only root can), and the launchers of Android's
+  apps.
+
+Nothing is removed while one of these paths is mounted. Below the
+caller's home each directory is opened without following symbolic
+links, and rmtree with dir_fd follows none. The method removes only
+what Init made and the caller's own data, so it asks for no
+authorization, as Init with the default channels. It returns when all
+is done.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tools/actions/initializer.py | 136 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 136 insertions(+)
+
+diff --git a/tools/actions/initializer.py b/tools/actions/initializer.py
+index 6044520..2aa493c 100644
+--- a/tools/actions/initializer.py
++++ b/tools/actions/initializer.py
+@@ -2,6 +2,9 @@
+ # SPDX-License-Identifier: GPL-3.0-or-later
+ import logging
+ import os
++import pwd
++import re
++import shutil
+ from tools import helpers
+ import tools.config
+ import stat
+@@ -184,6 +187,121 @@ def init(args):
+             logging.debug(e)
+             logging.error("Failed to restart container. Please do so manually.")
+ 
++# Sailfish OS: Waydroid's packages are part of the image, so Android has to be
++# removable without them. remove() undoes init and what the container made
++# since: in the work directory exactly these entries (the upgrader's list,
++# the overlays and the old session.cfg), not its log and not what the host
++# mounts there (pdx246's vendor view), and the calling user's Waydroid state
++# with Android's data and the launchers of Android's apps.
++work_entries = ["images", "rootfs", "overlay", "overlay_rw", "overlay_work",
++                "lxc", "host-permissions", "data", "cache_http", "session.cfg",
++                "waydroid.cfg", "waydroid.prop", "waydroid_base.prop"]
++
++def mount_points():
++    points = []
++    with open("/proc/self/mountinfo") as f:
++        for line in f:
++            # the fifth field; spaces and the like as octal escapes
++            point = line.split(" ")[4]
++            points.append(re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), point))
++    return points
++
++def check_not_mounted(path, points):
++    for point in points:
++        if point == path or point.startswith(path + "/"):
++            raise RuntimeError("Not removed: {} is mounted".format(point))
++
++def open_user_dir(home, parts):
++    # The user owns these directories, and root deletes in them: open each
++    # part below the home without following a symbolic link. Returns a
++    # descriptor of home/parts, or None.
++    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
++    try:
++        fd = os.open(home, flags)
++    except OSError:
++        return None
++    for part in parts:
++        try:
++            next_fd = os.open(part, flags, dir_fd=fd)
++        except OSError:
++            next_fd = None
++        os.close(fd)
++        if next_fd is None:
++            return None
++        fd = next_fd
++    return fd
++
++def remove_user_state(uid, points):
++    try:
++        home = pwd.getpwuid(uid).pw_dir
++    except KeyError:
++        return
++    if not home or home == "/":
++        return
++    home = os.path.realpath(home)
++    share = open_user_dir(home, [".local", "share"])
++    if share is None:
++        return
++    try:
++        # Waydroid's state of this user with Android's data, which belongs to
++        # Android's users: only root can delete it. rmtree with dir_fd
++        # follows no symbolic link.
++        try:
++            st = os.stat("waydroid", dir_fd=share, follow_symlinks=False)
++        except FileNotFoundError:
++            st = None
++        if st is not None:
++            check_not_mounted(home + "/.local/share/waydroid", points)
++            logging.info("Removing {}/.local/share/waydroid".format(home))
++            if stat.S_ISDIR(st.st_mode):
++                shutil.rmtree("waydroid", dir_fd=share)
++            else:
++                os.unlink("waydroid", dir_fd=share)
++        # The launchers of Android's apps (user_manager)
++        try:
++            apps = os.open("applications", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=share)
++        except OSError:
++            apps = None
++        if apps is not None:
++            try:
++                for name in os.listdir(apps):
++                    if name.startswith("waydroid.") and name.endswith(".desktop"):
++                        os.unlink(name, dir_fd=apps)
++            finally:
++                os.close(apps)
++    finally:
++        os.close(share)
++
++def remove(args, uid, session_pid=None):
++    logging.info("Removing Android (user {})".format(uid))
++    if is_initialized(args):
++        tools.actions.container_manager.stop(args, True)
++    # The session quits on the stop (SIGUSR1): let it finish before its state
++    # is removed
++    if session_pid:
++        for _ in range(50):
++            try:
++                os.kill(session_pid, 0)
++            except OSError:
++                break
++            time.sleep(0.1)
++
++    work = os.path.realpath(tools.config.defaults["work"])
++    paths = [os.path.join(work, e) for e in work_entries if os.path.lexists(os.path.join(work, e))]
++    # Nothing is removed while any of it is mounted: the container did not
++    # stop, or something else uses it
++    points = mount_points()
++    for path in paths:
++        check_not_mounted(path, points)
++    for path in paths:
++        logging.info("Removing {}".format(path))
++        if os.path.isdir(path) and not os.path.islink(path):
++            shutil.rmtree(path)
++        else:
++            os.unlink(path)
++    remove_user_state(uid, points)
++    logging.info("Android is removed")
++
+ class DbusInitializer(dbus.service.Object):
+     def __init__(self, looper, bus, object_path, args):
+         self.args = args
+@@ -213,6 +331,24 @@ class DbusInitializer(dbus.service.Object):
+             self.worker_thread.kill()
+             self.worker_thread.join()
+ 
++    # Undoes init: stops the container and its session, removes Android's
++    # images and the container's files, and the caller's Android data and
++    # app launchers (remove). It removes only what Init made and the caller's
++    # own data, so it asks for no authorization, as Init with the default
++    # channels. A running setup is stopped first. Returns when all is done.
++    @helpers.logging.log_exceptions
++    @dbus.service.method("id.waydro.Initializer", in_signature='', out_signature='', sender_keyword="sender", connection_keyword="conn")
++    def Remove(self, sender=None, conn=None):
++        dbus_info = dbus.Interface(conn.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus/Bus", False), "org.freedesktop.DBus")
++        uid = int(dbus_info.GetConnectionUnixUser(sender))
++        if self.worker_thread is not None:
++            self.worker_thread.kill()
++            self.worker_thread.join()
++            self.worker_thread = None
++        session = getattr(self.args, "session", None)
++        session_pid = int(session["pid"]) if session else None
++        remove(self.args, uid, session_pid)
++
+     @dbus.service.signal("id.waydro.Initializer", signature='s')
+     def ProgressChanged(self, message):
+         pass
+-- 
+2.53.0
+
